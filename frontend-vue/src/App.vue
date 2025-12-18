@@ -6,15 +6,28 @@
         <h3>💬 History</h3>
         <button class="close-btn" @click="showHistory = false">✕</button>
       </div>
+      <div class="history-search">
+        <input
+          v-model="historySearchQuery"
+          placeholder="🔍 Search history..."
+          class="search-input"
+        />
+      </div>
       <div class="history-list">
         <div
-          v-for="(item, idx) in conversationHistory"
+          v-for="(item, idx) in filteredHistory"
           :key="idx"
           class="history-item"
           @click="loadHistory(item)"
         >
           <div class="history-question">{{ item.question }}</div>
           <div class="history-time">{{ item.timestamp }}</div>
+        </div>
+        <div
+          v-if="filteredHistory.length === 0 && conversationHistory.length > 0"
+          class="history-empty"
+        >
+          No matching conversations
         </div>
         <div v-if="conversationHistory.length === 0" class="history-empty">
           No conversations yet
@@ -40,6 +53,13 @@
             </p>
           </div>
           <div class="header-actions">
+            <button
+              class="icon-btn"
+              @click="showStats = true"
+              title="View Statistics"
+            >
+              📊
+            </button>
             <button
               class="icon-btn"
               @click="showHistory = !showHistory"
@@ -84,6 +104,15 @@
           @keyup.enter="send"
           :disabled="isProcessing"
         />
+        <button
+          class="voice-btn"
+          @click="toggleVoiceInput"
+          :class="{ listening: isListening }"
+          :disabled="isProcessing"
+          title="Voice Input"
+        >
+          {{ isListening ? "🎙️" : "🎤" }}
+        </button>
         <button @click="send" :disabled="isProcessing">
           <span v-if="!isProcessing">Ask</span>
           <span v-else>Processing...</span>
@@ -100,6 +129,15 @@
           <div class="bubble-header">
             <span class="bubble-icon">{{ getBubbleIcon(item.type) }}</span>
             <span class="meta">{{ item.type }}</span>
+            <!-- Edit button for user messages -->
+            <button
+              v-if="item.type === 'user' && !isProcessing"
+              class="edit-btn"
+              @click="editMessage(item.text)"
+              title="Edit & Resend"
+            >
+              ✏️
+            </button>
           </div>
           <div class="text" v-html="renderMarkdown(item.text)"></div>
           <!-- Copy button for final answers -->
@@ -143,6 +181,38 @@
         </div>
       </div>
     </div>
+
+    <!-- Stats Modal -->
+    <div v-if="showStats" class="modal-overlay" @click="showStats = false">
+      <div class="stats-modal" @click.stop>
+        <div class="stats-header">
+          <h2>📊 Session Statistics</h2>
+          <button class="close-btn" @click="showStats = false">✕</button>
+        </div>
+        <div class="stats-content">
+          <div class="stat-card">
+            <div class="stat-icon">💬</div>
+            <div class="stat-value">{{ sessionStats.totalQuestions }}</div>
+            <div class="stat-label">Total Questions</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon">⚡</div>
+            <div class="stat-value">{{ sessionStats.avgResponseTime }}s</div>
+            <div class="stat-label">Avg Response Time</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon">💾</div>
+            <div class="stat-value">{{ conversationHistory.length }}</div>
+            <div class="stat-label">Saved Conversations</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-icon">⏱️</div>
+            <div class="stat-value">{{ sessionStats.totalTime }}s</div>
+            <div class="stat-label">Total Processing Time</div>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -166,7 +236,31 @@ export default {
         { icon: "🧮", text: "What is 156 multiplied by 89?" },
         { icon: "💡", text: "Best practices for cloud migration" },
       ],
+      // New features
+      historySearchQuery: "",
+      isListening: false,
+      recognition: null,
+      showStats: false,
+      sessionStats: {
+        totalQuestions: 0,
+        avgResponseTime: 0,
+        totalTime: 0,
+      },
+      responseTimes: [],
     };
+  },
+  computed: {
+    filteredHistory() {
+      if (!this.historySearchQuery.trim()) {
+        return this.conversationHistory;
+      }
+      const query = this.historySearchQuery.toLowerCase();
+      return this.conversationHistory.filter(
+        (item) =>
+          item.question.toLowerCase().includes(query) ||
+          item.answer.toLowerCase().includes(query)
+      );
+    },
   },
   mounted() {
     // Load dark mode preference
@@ -179,6 +273,30 @@ export default {
     const savedHistory = localStorage.getItem("conversationHistory");
     if (savedHistory) {
       this.conversationHistory = JSON.parse(savedHistory);
+    }
+
+    // Initialize Web Speech API for voice input
+    if ("webkitSpeechRecognition" in window || "SpeechRecognition" in window) {
+      const SpeechRecognition =
+        window.SpeechRecognition || window.webkitSpeechRecognition;
+      this.recognition = new SpeechRecognition();
+      this.recognition.continuous = false;
+      this.recognition.interimResults = false;
+      this.recognition.lang = "en-US";
+
+      this.recognition.onresult = (event) => {
+        const transcript = event.results[0][0].transcript;
+        this.question = transcript;
+        this.isListening = false;
+      };
+
+      this.recognition.onerror = () => {
+        this.isListening = false;
+      };
+
+      this.recognition.onend = () => {
+        this.isListening = false;
+      };
     }
   },
   methods: {
@@ -227,6 +345,49 @@ export default {
     clearHistory() {
       this.conversationHistory = [];
       localStorage.removeItem("conversationHistory");
+      this.sessionStats = {
+        totalQuestions: 0,
+        avgResponseTime: 0,
+        totalTime: 0,
+      };
+      this.responseTimes = [];
+    },
+    toggleVoiceInput() {
+      if (!this.recognition) {
+        alert(
+          "Voice input is not supported in your browser. Please use Chrome, Edge, or Safari."
+        );
+        return;
+      }
+
+      if (this.isListening) {
+        this.recognition.stop();
+        this.isListening = false;
+      } else {
+        this.recognition.start();
+        this.isListening = true;
+      }
+    },
+    editMessage(text) {
+      this.question = text;
+      // Scroll to input
+      this.$nextTick(() => {
+        const input = document.querySelector(".input-row input");
+        if (input) {
+          input.focus();
+          window.scrollTo({ top: 0, behavior: "smooth" });
+        }
+      });
+    },
+    updateStats(responseTime) {
+      this.responseTimes.push(responseTime);
+      this.sessionStats.totalQuestions++;
+      this.sessionStats.totalTime += responseTime;
+      this.sessionStats.avgResponseTime = (
+        this.sessionStats.totalTime /
+        this.sessionStats.totalQuestions /
+        1000
+      ).toFixed(1);
     },
     saveToHistory(question, answer) {
       const timestamp = new Date().toLocaleString();
@@ -342,6 +503,8 @@ export default {
                 this.thinkingSteps = [];
                 this.permanentMessages.push(obj);
                 this.responseTime = Date.now() - this.startTime;
+                // Update stats
+                this.updateStats(this.responseTime);
                 // Save to history
                 this.saveToHistory(currentQuestion, obj.text);
               } else if (obj.type === "analysis" || obj.type === "step") {
@@ -457,6 +620,43 @@ export default {
 .dark .close-btn:hover {
   background: #4a5568;
   color: #e2e8f0;
+}
+
+/* History Search */
+.history-search {
+  padding: 12px;
+  border-bottom: 2px solid #e2e8f0;
+}
+
+.dark .history-search {
+  border-bottom-color: #4a5568;
+}
+
+.search-input {
+  width: 100%;
+  padding: 10px 14px;
+  border: 2px solid #e2e8f0;
+  border-radius: 8px;
+  font-size: 14px;
+  background: #f8fafc;
+  color: #1a202c;
+  transition: all 0.2s;
+}
+
+.search-input:focus {
+  outline: none;
+  border-color: #3b82f6;
+  background: white;
+}
+
+.dark .search-input {
+  background: #374151;
+  border-color: #4a5568;
+  color: #e2e8f0;
+}
+
+.dark .search-input:focus {
+  border-color: #3b82f6;
 }
 
 .history-list {
@@ -783,6 +983,33 @@ button:disabled {
   box-shadow: none;
 }
 
+/* Voice Input Button */
+.voice-btn {
+  padding: 14px 18px;
+  font-size: 20px;
+  min-width: 52px;
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+}
+
+.voice-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, #059669 0%, #047857 100%);
+}
+
+.voice-btn.listening {
+  background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
 .log {
   display: flex;
   flex-direction: column;
@@ -826,6 +1053,24 @@ button:disabled {
   letter-spacing: 0.8px;
   font-weight: 600;
   opacity: 0.7;
+}
+
+/* Edit Button */
+.edit-btn {
+  margin-left: auto;
+  background: rgba(255, 255, 255, 0.2);
+  border: none;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.2s;
+  color: white;
+}
+
+.edit-btn:hover {
+  background: rgba(255, 255, 255, 0.3);
+  transform: scale(1.1);
 }
 
 .bubble .text {
@@ -1122,5 +1367,127 @@ button:disabled {
     transform: scale(1);
     opacity: 1;
   }
+}
+
+/* Stats Modal */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+  animation: fadeIn 0.2s ease-out;
+}
+
+.stats-modal {
+  background: white;
+  border-radius: 16px;
+  padding: 0;
+  max-width: 600px;
+  width: 90%;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  animation: slideUp 0.3s ease-out;
+}
+
+.dark .stats-modal {
+  background: #2d3748;
+}
+
+@keyframes slideUp {
+  from {
+    opacity: 0;
+    transform: translateY(30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.stats-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 24px;
+  border-bottom: 2px solid #e2e8f0;
+}
+
+.dark .stats-header {
+  border-bottom-color: #4a5568;
+}
+
+.stats-header h2 {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 700;
+  color: #1a202c;
+}
+
+.dark .stats-header h2 {
+  color: #e2e8f0;
+}
+
+.stats-content {
+  padding: 24px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 16px;
+}
+
+.stat-card {
+  background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+  padding: 20px;
+  border-radius: 12px;
+  text-align: center;
+  transition: all 0.2s;
+  border: 2px solid #e2e8f0;
+}
+
+.stat-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.1);
+  border-color: #3b82f6;
+}
+
+.dark .stat-card {
+  background: linear-gradient(135deg, #374151 0%, #1f2937 100%);
+  border-color: #4a5568;
+}
+
+.dark .stat-card:hover {
+  border-color: #3b82f6;
+}
+
+.stat-icon {
+  font-size: 32px;
+  margin-bottom: 8px;
+}
+
+.stat-value {
+  font-size: 28px;
+  font-weight: 700;
+  color: #1a202c;
+  margin-bottom: 4px;
+}
+
+.dark .stat-value {
+  color: #e2e8f0;
+}
+
+.stat-label {
+  font-size: 12px;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 600;
+}
+
+.dark .stat-label {
+  color: #94a3b8;
 }
 </style>
